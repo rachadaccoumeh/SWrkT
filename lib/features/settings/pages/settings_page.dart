@@ -100,7 +100,7 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       final fileId = ID.unique();
       final file = await repo.uploadImage(fileId, picked.path);
-      final url = repo.getFileView(file.$id);
+      final url = repo.getFilePreview(file.$id);
       await repo.updateUserProfile(profile!.$id, {'avatar_url': url}, user!.$id);
       _load();
     } catch (_) {

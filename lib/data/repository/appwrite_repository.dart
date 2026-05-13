@@ -101,7 +101,7 @@ class AppwriteRepository {
       _createDoc(AppwriteConstants.usersCollection, data, userId);
 
   Future<models.DocumentList> getUserProfile(String userId) =>
-      _listDocs(AppwriteConstants.usersCollection, queries: ['equal("user_id", "$userId")']);
+      _listDocs(AppwriteConstants.usersCollection, queries: [Query.equal('user_id', userId)]);
 
   Future<models.Document> updateUserProfile(String docId, Map<String, dynamic> data, String userId) =>
       _updateDoc(AppwriteConstants.usersCollection, docId, data, userId);
@@ -111,7 +111,7 @@ class AppwriteRepository {
       _createDoc(AppwriteConstants.exercisesCollection, data, userId);
 
   Future<models.DocumentList> getExercises(String userId) =>
-      _listDocs(AppwriteConstants.exercisesCollection, queries: ['equal("user_id", "$userId")', 'orderDesc("\$createdAt")']);
+      _listDocs(AppwriteConstants.exercisesCollection, queries: [Query.equal('user_id', userId), Query.orderDesc('\$createdAt')]);
 
   Future<models.Document> updateExercise(String docId, Map<String, dynamic> data, String userId) =>
       _updateDoc(AppwriteConstants.exercisesCollection, docId, data, userId);
@@ -124,10 +124,10 @@ class AppwriteRepository {
       _createDoc(AppwriteConstants.workoutsCollection, data, userId);
 
   Future<models.DocumentList> getWorkouts(String userId) =>
-      _listDocs(AppwriteConstants.workoutsCollection, queries: ['equal("user_id", "$userId")', 'orderDesc("started_at")']);
+      _listDocs(AppwriteConstants.workoutsCollection, queries: [Query.equal('user_id', userId), Query.orderDesc('started_at')]);
 
   Future<models.DocumentList> getActiveWorkout(String userId) =>
-      _listDocs(AppwriteConstants.workoutsCollection, queries: ['equal("user_id", "$userId")', 'equal("is_active", "true")']);
+      _listDocs(AppwriteConstants.workoutsCollection, queries: [Query.equal('user_id', userId), Query.equal('is_active', true)]);
 
   Future<models.Document> updateWorkout(String docId, Map<String, dynamic> data, String userId) =>
       _updateDoc(AppwriteConstants.workoutsCollection, docId, data, userId);
@@ -140,10 +140,7 @@ class AppwriteRepository {
       _createDoc(AppwriteConstants.setsCollection, data, userId);
 
   Future<models.DocumentList> getSets(String workoutId) =>
-      _listDocs(AppwriteConstants.setsCollection, queries: ['equal("workout_id", "$workoutId")', 'orderAsc("set_number")']);
-
-  Future<models.DocumentList> getSetsByExercise(String exerciseId, String userId) =>
-      _listDocs(AppwriteConstants.setsCollection, queries: ['equal("exercise_id", "$exerciseId")', 'equal("user_id", "$userId")', 'orderDesc("\$createdAt")']);
+      _listDocs(AppwriteConstants.setsCollection, queries: [Query.equal('workout_id', workoutId), Query.orderAsc('set_number')]);
 
   Future<models.Document> updateSet(String docId, Map<String, dynamic> data, String userId) =>
       _updateDoc(AppwriteConstants.setsCollection, docId, data, userId);
@@ -156,28 +153,18 @@ class AppwriteRepository {
       _createDoc(AppwriteConstants.prefsCollection, data, userId);
 
   Future<models.DocumentList> getPreferences(String userId) =>
-      _listDocs(AppwriteConstants.prefsCollection, queries: ['equal("user_id", "$userId")']);
+      _listDocs(AppwriteConstants.prefsCollection, queries: [Query.equal('user_id', userId)]);
 
   Future<models.Document> updatePreference(String docId, Map<String, dynamic> data, String userId) =>
       _updateDoc(AppwriteConstants.prefsCollection, docId, data, userId);
 
   // Storage
-  Future<models.File> uploadImage(String fileId, String filePath) =>
-      _storage.createFile(bucketId: AppwriteConstants.imagesBucket, fileId: fileId, file: InputFile.fromPath(path: filePath));
+  Future<models.File> uploadImage(String fileId, String path) =>
+      _storage.createFile(bucketId: AppwriteConstants.imagesBucket, fileId: fileId, file: InputFile(path: path));
 
   String getFilePreview(String fileId) =>
-      'https://appwrite.ubity.dev/v1/storage/buckets/${AppwriteConstants.imagesBucket}/files/$fileId/view?project=${AppwriteConstants.projectId}';
+      '${AppwriteConstants.endpoint}/storage/buckets/${AppwriteConstants.imagesBucket}/files/$fileId/preview?project=${AppwriteConstants.projectId}';
 
-  String getFileView(String fileId) =>
-      'https://appwrite.ubity.dev/v1/storage/buckets/${AppwriteConstants.imagesBucket}/files/$fileId/view?project=${AppwriteConstants.projectId}';
-
-  // Health
-  Future<bool> ping() async {
-    try {
-      await _client.ping();
-      return true;
-    } on AppwriteException {
-      return false;
-    }
-  }
+  Future<void> deleteFile(String fileId) =>
+      _storage.deleteFile(bucketId: AppwriteConstants.imagesBucket, fileId: fileId);
 }
