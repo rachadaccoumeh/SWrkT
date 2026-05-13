@@ -1,111 +1,108 @@
-
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/theme/app_colors.dart';
 import '../controllers/auth_controller.dart';
 
-class LoginPage extends StatelessWidget {
-  const LoginPage({super.key});
+class SignUpPage extends StatelessWidget {
+  const SignUpPage({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: SafeArea(child: _LoginContent()),
+      body: SafeArea(child: _SignUpContent()),
     );
   }
 }
 
-class _LoginContent extends StatefulWidget {
+class _SignUpContent extends StatefulWidget {
   @override
-  State<_LoginContent> createState() => _LoginContentState();
+  State<_SignUpContent> createState() => _SignUpContentState();
 }
 
-class _LoginContentState extends State<_LoginContent> {
+class _SignUpContentState extends State<_SignUpContent> {
   final _formKey = GlobalKey<FormState>();
+  final _nameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
+  final _confirmCtrl = TextEditingController();
   final _obscure = true.obs;
 
   @override
   void dispose() {
+    _nameCtrl.dispose();
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
+    _confirmCtrl.dispose();
     super.dispose();
   }
 
   void _submit() {
     if (_formKey.currentState?.validate() ?? false) {
-      Get.find<AuthController>().login(_emailCtrl.text.trim(), _passwordCtrl.text);
+      Get.find<AuthController>().signUp(
+        _nameCtrl.text.trim(),
+        _emailCtrl.text.trim(),
+        _passwordCtrl.text,
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final auth = Get.put(AuthController());
+    final auth = Get.find<AuthController>();
     return Obx(() => SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SizedBox(height: 60),
-          Center(
-            child: Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-              ),
-              child: const Center(
-                child: Icon(Icons.fitness_center_rounded, color: AppColors.primary, size: 30),
-              ),
-            ),
+          const SizedBox(height: 48),
+          IconButton(
+            onPressed: () => Get.back(),
+            icon: const Icon(Icons.arrow_back, color: AppColors.onSurfaceVariant),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
           Center(
             child: Text(
-              'Welcome Back',
+              'Create Account',
               style: GoogleFonts.lexend(fontSize: 28, fontWeight: FontWeight.w700, color: AppColors.onSurface),
             ),
           ),
           const SizedBox(height: 8),
           Center(
             child: Text(
-              'Sign in to continue tracking your workouts',
+              'Start tracking your fitness journey',
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(fontSize: 14, color: AppColors.onSurfaceVariant),
             ),
           ),
-          const SizedBox(height: 48),
+          const SizedBox(height: 40),
           Form(
             key: _formKey,
             child: Column(
               children: [
-                _TextField(
-                  label: 'Email',
-                  hint: 'you@example.com',
-                  controller: _emailCtrl,
-                  keyboardType: TextInputType.emailAddress,
-                  validator: (v) => v?.isEmail ?? false ? null : 'Enter a valid email',
-                ),
-                const SizedBox(height: 20),
-                _TextField(
+                _TextFieldS(label: 'Name', hint: 'Your name', controller: _nameCtrl, validator: (v) => v != null && v.length >= 2 ? null : 'Name required'),
+                const SizedBox(height: 16),
+                _TextFieldS(label: 'Email', hint: 'you@example.com', controller: _emailCtrl, keyboardType: TextInputType.emailAddress, validator: (v) => v?.isEmail ?? false ? null : 'Valid email required'),
+                const SizedBox(height: 16),
+                _TextFieldS(
                   label: 'Password',
-                  hint: 'Your password',
+                  hint: 'Min 8 characters',
                   controller: _passwordCtrl,
                   obscure: _obscure.value,
                   suffix: IconButton(
-                    icon: Icon(
-                      _obscure.value ? Icons.visibility_off : Icons.visibility,
-                      color: AppColors.onSurfaceVariant,
-                      size: 20,
-                    ),
+                    icon: Icon(_obscure.value ? Icons.visibility_off : Icons.visibility, color: AppColors.onSurfaceVariant, size: 20),
                     onPressed: () => _obscure.toggle(),
                   ),
                   validator: (v) => v != null && v.length >= 8 ? null : 'Min 8 characters',
+                ),
+                const SizedBox(height: 16),
+                _TextFieldS(
+                  label: 'Confirm Password',
+                  hint: 'Repeat password',
+                  controller: _confirmCtrl,
+                  obscure: true,
+                  validator: (v) => v == _passwordCtrl.text ? null : 'Passwords do not match',
                 ),
               ],
             ),
@@ -120,11 +117,7 @@ class _LoginContentState extends State<_LoginContent> {
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: const Color(0xFF5C3535)),
               ),
-              child: Text(
-                auth.errorMessage.value!,
-                style: const TextStyle(color: AppColors.error, fontSize: 13),
-                textAlign: TextAlign.center,
-              ),
+              child: Text(auth.errorMessage.value!, style: const TextStyle(color: AppColors.error, fontSize: 13), textAlign: TextAlign.center),
             ),
           ],
           const SizedBox(height: 32),
@@ -140,30 +133,9 @@ class _LoginContentState extends State<_LoginContent> {
                 elevation: 0,
               ),
               child: auth.isLoading.value
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.background),
-                    )
-                  : Text(
-                      'Sign In',
-                      style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600),
-                    ),
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.background))
+                  : Text('Create Account', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600)),
             ),
-          ),
-          const SizedBox(height: 24),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text('New here? ', style: GoogleFonts.inter(fontSize: 14, color: AppColors.onSurfaceVariant)),
-              GestureDetector(
-                onTap: () => Get.toNamed('/signup'),
-                child: Text(
-                  'Create account',
-                  style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.primary),
-                ),
-              ),
-            ],
           ),
           const SizedBox(height: 24),
         ],
@@ -172,7 +144,7 @@ class _LoginContentState extends State<_LoginContent> {
   }
 }
 
-class _TextField extends StatelessWidget {
+class _TextFieldS extends StatelessWidget {
   final String label;
   final String hint;
   final TextEditingController? controller;
@@ -180,16 +152,7 @@ class _TextField extends StatelessWidget {
   final Widget? suffix;
   final TextInputType? keyboardType;
   final String? Function(String?)? validator;
-
-  const _TextField({
-    required this.label,
-    required this.hint,
-    this.controller,
-    this.obscure = false,
-    this.suffix,
-    this.keyboardType,
-    this.validator,
-  });
+  const _TextFieldS({required this.label, required this.hint, this.controller, this.obscure=false, this.suffix, this.keyboardType, this.validator});
 
   @override
   Widget build(BuildContext context) {
@@ -210,22 +173,9 @@ class _TextField extends StatelessWidget {
             filled: true,
             fillColor: AppColors.surface,
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: AppColors.outlineVariant),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: AppColors.outlineVariant),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
-            ),
-            errorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: AppColors.error),
-            ),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.outlineVariant)),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.outlineVariant)),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
             suffixIcon: suffix,
           ),
         ),

@@ -1,8 +1,9 @@
 import 'package:get/get.dart';
-import '../features/splash/bindings/splash_binding.dart';
+import 'package:flutter/material.dart';
 import '../features/splash/pages/splash_page.dart';
 import '../features/auth/pages/login_page.dart';
-import '../features/home/pages/home_page.dart';
+import '../features/auth/pages/signup_page.dart';
+import '../features/main_navigation/pages/main_navigation_page.dart';
 import 'app_routes.dart';
 
 abstract final class AppPages {
@@ -10,15 +11,18 @@ abstract final class AppPages {
     GetPage(
       name: AppRoutes.splash,
       page: () => const SplashPage(),
-      binding: SplashBinding(),
     ),
     GetPage(
       name: AppRoutes.login,
       page: () => const LoginPage(),
     ),
     GetPage(
+      name: AppRoutes.signup,
+      page: () => const SignUpPage(),
+    ),
+    GetPage(
       name: AppRoutes.home,
-      page: () => const HomePage(),
+      page: () => const MainNavigationPage(),
     ),
   ];
 }

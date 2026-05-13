@@ -18,8 +18,6 @@ class SplashController extends GetxController {
     Get.offAllNamed(isLoggedIn ? AppRoutes.home : AppRoutes.login);
   }
 
-  /// Calls Appwrite account.get(). Returns true if a valid session exists.
-  /// A 401 AppwriteException means no session → route to login.
   Future<bool> _checkAuthState() async {
     try {
       await _repository.getCurrentUser();

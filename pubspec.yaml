@@ -38,6 +38,13 @@ dependencies:
   google_fonts: ^6.2.1
   appwrite: ^20.2.1
   intl: ^0.20.2
+  image_picker: ^1.1.2
+  fl_chart: ^0.70.2
+  shared_preferences: ^2.5.3
+  cached_network_image: ^3.4.1
+  shimmer: ^3.0.0
+  flutter_svg: ^2.1.0
+  image: ^4.5.4
 
 dev_dependencies:
   flutter_test:

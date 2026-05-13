@@ -22,6 +22,7 @@ class App extends StatelessWidget {
       theme: AppTheme.dark,
       initialRoute: AppRoutes.splash,
       getPages: AppPages.pages,
+      defaultTransition: Transition.fade,
     );
   }
 }
