@@ -35,26 +35,51 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _load() async {
     try {
+      // Load local prefs first as immediate default
+      final prefs = await SharedPreferences.getInstance();
+      darkMode = prefs.getBool('dark_mode') ?? true;
+      weightUnit = prefs.getString('weight_unit') ?? 'lbs';
+
+      // Then sync with Appwrite for cross-device consistency
       user = await repo.getCurrentUser();
       final profiles = await repo.getUserProfile(user!.$id);
       if (profiles.documents.isNotEmpty) profile = profiles.documents.first;
       final p = await repo.getPreferences(user!.$id);
       if (p.documents.isNotEmpty) {
         prefsDoc = p.documents.first;
-        darkMode = prefsDoc!.data['dark_mode'] ?? true;
-        weightUnit = prefsDoc!.data['weight_unit'] ?? 'lbs';
+        darkMode = prefsDoc!.data['dark_mode'] ?? darkMode;
+        weightUnit = prefsDoc!.data['weight_unit'] ?? weightUnit;
+        // Sync Appwrite values back to local prefs
+        await prefs.setBool('dark_mode', darkMode);
+        await prefs.setString('weight_unit', weightUnit);
+        Get.changeThemeMode(darkMode ? ThemeMode.dark : ThemeMode.light);
       }
     } catch (_) {}
     if (mounted) setState(() => loading = false);
   }
 
   Future<void> _savePreferences() async {
-    if (prefsDoc == null) return;
     try {
-      await repo.updatePreference(prefsDoc!.$id, {
-        'dark_mode': darkMode,
-        'weight_unit': weightUnit,
-      }, user!.$id);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('dark_mode', darkMode);
+      await prefs.setString('weight_unit', weightUnit);
+      if (user == null) return;
+      // Try to find or create preferences doc, then update
+      final p = await repo.getPreferences(user!.$id);
+      if (p.documents.isNotEmpty) {
+        prefsDoc = p.documents.first;
+        await repo.updatePreference(prefsDoc!.$id, {
+          'dark_mode': darkMode,
+          'weight_unit': weightUnit,
+        }, user!.$id);
+      } else {
+        // Create new preferences doc if it doesn't exist
+        prefsDoc = await repo.createPreference(user!.$id, {
+          'dark_mode': darkMode,
+          'weight_unit': weightUnit,
+          'user_id': user!.$id,
+        });
+      }
     } catch (_) {}
   }
 
@@ -218,6 +243,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         value: darkMode,
                         onChanged: (v) {
                           setState(() => darkMode = v);
+                          Get.changeThemeMode(v ? ThemeMode.dark : ThemeMode.light);
                           _savePreferences();
                         },
                         activeColor: AppColors.secondaryContainer,

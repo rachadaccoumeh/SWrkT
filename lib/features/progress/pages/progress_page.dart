@@ -44,11 +44,7 @@ class _ProgressPageState extends State<ProgressPage> with SingleTickerProviderSt
       workouts = w.documents.where((d) => d.data['is_active'] == false).toList();
       final e = await repo.getExercises(user.$id);
       exercises = e.documents;
-      final s = await repo.databases.listDocuments(
-        databaseId: 'simply_tracker_db',
-        collectionId: 'sets',
-        queries: [Query.equal('user_id', user.$id), Query.orderDesc(r'\$createdAt')],
-      );
+      final s = await repo.getAllSets(user.$id);
       sets = s.documents;
     } catch (_) {}
     if (mounted) setState(() => loading = false);
@@ -56,8 +52,8 @@ class _ProgressPageState extends State<ProgressPage> with SingleTickerProviderSt
 
   int get workoutCount => workouts.length;
   int get totalSets => sets.where((s) => s.data['is_completed'] == true).length;
-  int get totalReps => sets.where((s) => s.data['is_completed'] == true).fold(0, (sum, s) => sum + ((s.data['reps'] ?? 0) as int));
-  double get totalVolume => sets.where((s) => s.data['is_completed'] == true).fold(0.0, (sum, s) => sum + ((s.data['reps'] ?? 0) as int) * ((s.data['weight'] ?? 0.0) as double));
+  int get totalReps => sets.where((s) => s.data['is_completed'] == true).fold(0, (sum, s) => sum + ((s.data['reps'] ?? 0) as num).toInt());
+  double get totalVolume => sets.where((s) => s.data['is_completed'] == true).fold(0.0, (sum, s) => sum + ((s.data['reps'] ?? 0) as num).toInt() * ((s.data['weight'] ?? 0.0) as num).toDouble());
 
   int get streakDays {
     if (workouts.isEmpty) return 0;
@@ -307,8 +303,8 @@ class _RecentPRs extends StatelessWidget {
     for (final s in sets) {
       if (s.data['is_completed'] != true) continue;
       final exId = s.data['exercise_id']?.toString();
-      final w = (s.data['weight'] ?? 0.0) as double;
-      if (exId != null && w > (prs[exId] ?? 0)) prs[exId] = w;
+      final w = (s.data['weight'] ?? 0.0) as num;
+      if (exId != null && w.toDouble() > (prs[exId] ?? 0.0)) prs[exId] = w.toDouble();
     }
     final sorted = prs.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
     final top = sorted.take(5).toList();

@@ -142,6 +142,9 @@ class AppwriteRepository {
   Future<models.DocumentList> getSets(String workoutId) =>
       _listDocs(AppwriteConstants.setsCollection, queries: [Query.equal('workout_id', workoutId), Query.orderAsc('set_number')]);
 
+  Future<models.DocumentList> getAllSets(String userId) =>
+      _listDocs(AppwriteConstants.setsCollection, queries: [Query.equal('user_id', userId), Query.orderDesc('\$createdAt')]);
+
   Future<models.Document> updateSet(String docId, Map<String, dynamic> data, String userId) =>
       _updateDoc(AppwriteConstants.setsCollection, docId, data, userId);
 
