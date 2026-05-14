@@ -1,13 +1,14 @@
-import 'dart:io' as io;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:appwrite/models.dart' as models;
-import 'package:appwrite/appwrite.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../../core/theme/app_colors.dart';
-import '../../main_navigation/pages/main_navigation_page.dart';
 import '../../../core/utils/extensions.dart';
 import '../../../data/repository/appwrite_repository.dart';
+import '../../../data/local/local_store.dart';
+import '../../../data/local/sync_manager.dart';
+import '../../main_navigation/pages/main_navigation_page.dart';
+import '../../auth/controllers/auth_controller.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -19,11 +20,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final repo = AppwriteRepository();
   models.User? user;
-  models.Document? profile;
-  List<models.Document> recentWorkouts = [];
-  List<models.Document> recentExercises = [];
-  List<models.Document> allWorkouts = [];
-  List<models.Document> allSets = [];
+  Map<String, dynamic>? profile;
+  List<Map<String, dynamic>> allWorkouts = [];
+  List<Map<String, dynamic>> recentWorkouts = [];
+  List<Map<String, dynamic>> recentExercises = [];
   bool loading = true;
 
   @override
@@ -34,39 +34,101 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _load() async {
     try {
-      user = await repo.getCurrentUser();
-      final profiles = await repo.getUserProfile(user!.$id);
-      if (profiles.documents.isNotEmpty) profile = profiles.documents.first;
-      final workouts = await repo.getWorkouts(user!.$id);
-      allWorkouts = workouts.documents;
-      recentWorkouts = workouts.documents.where((w) => !(w.data['is_active'] ?? false)).take(5).toList();
-      final exercises = await repo.getExercises(user!.$id);
-      recentExercises = exercises.documents.take(5).toList();
-      final sets = await repo.getAllSets(user!.$id);
-      allSets = sets.documents;
+      final authCtrl = Get.find<AuthController>();
+      user = authCtrl.user.value;
+      if (user == null) {
+        user = await repo.getCurrentUser();
+        authCtrl.user.value = user;
+      }
+      final uid = user!.$id;
+
+      // Load from local first (instant)
+      profile = LocalStore.instance.getProfile(uid);
+      allWorkouts = LocalStore.instance.getWorkouts(uid);
+      recentWorkouts = allWorkouts.where((w) => w['isActive'] != true).take(5).toList();
+      recentExercises = LocalStore.instance.getExercises(uid).take(5).toList();
+
+      // Then sync from Appwrite in background
+      try {
+        final remoteProfiles = await repo.getUserProfile(uid);
+        if (remoteProfiles.documents.isNotEmpty) {
+          final doc = remoteProfiles.documents.first;
+          profile = {
+            'id': doc.$id,
+            'remoteId': doc.$id,
+            'userId': doc.data['user_id'] ?? '',
+            'name': doc.data['name'] ?? '',
+            'email': doc.data['email'] ?? '',
+            'avatarUrl': doc.data['avatar_url'] ?? '',
+            'isSynced': true,
+          };
+          await LocalStore.instance.saveProfile(profile!);
+        }
+        final remoteWorkouts = await repo.getWorkouts(uid);
+        for (final doc in remoteWorkouts.documents) {
+          await LocalStore.instance.saveWorkout(_docToWorkout(doc));
+        }
+        final remoteEx = await repo.getExercises(uid);
+        for (final doc in remoteEx.documents) {
+          await LocalStore.instance.saveExercise(_docToExercise(doc));
+        }
+        allWorkouts = LocalStore.instance.getWorkouts(uid);
+        recentWorkouts = allWorkouts.where((w) => w['isActive'] != true).take(5).toList();
+        recentExercises = LocalStore.instance.getExercises(uid).take(5).toList();
+      } catch (_) {}
+
+      if (Get.isRegistered<SyncManager>()) Get.find<SyncManager>().queueSync();
     } catch (_) {}
     if (mounted) setState(() => loading = false);
   }
 
+  Map<String, dynamic> _docToWorkout(models.Document doc) {
+    return {
+      'id': doc.$id,
+      'remoteId': doc.$id,
+      'userId': doc.data['user_id'] ?? '',
+      'name': doc.data['name'] ?? '',
+      'isActive': doc.data['is_active'] ?? false,
+      'isSynced': true,
+      'startedAt': DateTime.tryParse(doc.data['started_at'] ?? '')?.millisecondsSinceEpoch ?? 0,
+      'completedAt': doc.data['completed_at'] != null ? DateTime.tryParse(doc.data['completed_at'])?.millisecondsSinceEpoch : null,
+      'createdAt': DateTime.now().millisecondsSinceEpoch,
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+    };
+  }
+
+  Map<String, dynamic> _docToExercise(models.Document doc) {
+    return {
+      'id': doc.$id,
+      'remoteId': doc.$id,
+      'userId': doc.data['user_id'] ?? '',
+      'name': doc.data['name'] ?? '',
+      'muscleGroup': doc.data['muscle_group'] ?? '',
+      'notes': doc.data['notes'] ?? '',
+      'imageUrl': doc.data['image_url'] ?? '',
+      'isSynced': true,
+      'createdAt': DateTime.tryParse(doc.data['created_at'] ?? '')?.millisecondsSinceEpoch ?? 0,
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+    };
+  }
+
   int get _workoutsThisWeek {
     final now = DateTime.now();
-    final weekAgo = now.subtract(const Duration(days: 7));
-    return allWorkouts.where((w) {
-      final d = DateTime.tryParse(w.data['completed_at'] ?? w.data['started_at'] ?? '');
-      return d != null && d.isAfter(weekAgo) && w.data['is_active'] == false;
-    }).length;
+    final weekAgo = now.subtract(const Duration(days: 7)).millisecondsSinceEpoch;
+    return allWorkouts.where((w) => (w['completedAt'] ?? w['startedAt'] ?? 0) >= weekAgo && w['isActive'] != true).length;
   }
 
   double get _totalVolumeThisWeek {
     final now = DateTime.now();
-    final weekAgo = now.subtract(const Duration(days: 7));
+    final weekAgo = now.subtract(const Duration(days: 7)).millisecondsSinceEpoch;
     double vol = 0;
     for (final w in allWorkouts) {
-      final d = DateTime.tryParse(w.data['completed_at'] ?? w.data['started_at'] ?? '');
-      if (d == null || d.isBefore(weekAgo) || w.data['is_active'] == true) continue;
-      for (final s in allSets) {
-        if (s.data['workout_id'] == w.$id && s.data['is_completed'] == true) {
-          vol += ((s.data['reps'] ?? 0) as int) * ((s.data['weight'] ?? 0.0) as double);
+      final ts = w['completedAt'] ?? w['startedAt'] ?? 0;
+      if (ts < weekAgo || w['isActive'] == true) continue;
+      final sets = LocalStore.instance.getSetsForWorkout(w['id']);
+      for (final s in sets) {
+        if (s['isCompleted'] == true) {
+          vol += ((s['reps'] ?? 0) as num).toInt() * ((s['weight'] ?? 0.0) as num).toDouble();
         }
       }
     }
@@ -75,12 +137,13 @@ class _HomePageState extends State<HomePage> {
 
   int get _streakDays {
     if (allWorkouts.isEmpty) return 0;
-    final completed = allWorkouts.where((w) => w.data['is_active'] == false).toList();
+    final completed = allWorkouts.where((w) => w['isActive'] != true).toList();
     if (completed.isEmpty) return 0;
     final dates = completed.map((w) {
-      final d = DateTime.tryParse(w.data['completed_at'] ?? w.data['started_at'] ?? '');
-      return d != null ? DateTime(d.year, d.month, d.day) : null;
-    }).whereType<DateTime>().toSet().toList()..sort((a, b) => b.compareTo(a));
+      final ts = w['completedAt'] ?? w['startedAt'] ?? 0;
+      final d = DateTime.fromMillisecondsSinceEpoch(ts as int);
+      return DateTime(d.year, d.month, d.day);
+    }).toSet().toList()..sort((a, b) => b.compareTo(a));
     if (dates.isEmpty) return 0;
     int streak = 0;
     DateTime check = DateTime.now();
@@ -99,7 +162,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final name = profile?.data['name'] ?? user?.name ?? 'Athlete';
+    final name = profile?['name'] ?? user?.name ?? 'Athlete';
+    final avatarUrl = profile?['avatarUrl']?.toString();
     return RefreshIndicator(
       onRefresh: _load,
       color: AppColors.primary,
@@ -108,7 +172,7 @@ class _HomePageState extends State<HomePage> {
         backgroundColor: AppColors.background,
         body: SafeArea(
           child: loading
-              ? const _HomeShimmer()
+              ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
               : CustomScrollView(
                   slivers: [
                     SliverToBoxAdapter(
@@ -130,12 +194,8 @@ class _HomePageState extends State<HomePage> {
                               child: CircleAvatar(
                                 radius: 24,
                                 backgroundColor: AppColors.surface,
-                                backgroundImage: profile?.data['avatar_url'] != null && (profile?.data['avatar_url'] as String).isNotEmpty
-                                    ? NetworkImage(profile!.data['avatar_url'] as String)
-                                    : null,
-                                child: profile?.data['avatar_url'] == null || (profile?.data['avatar_url'] as String).isEmpty
-                                    ? const Icon(Icons.person, color: AppColors.onSurfaceVariant)
-                                    : null,
+                                backgroundImage: avatarUrl != null && avatarUrl.isNotEmpty ? CachedNetworkImageProvider(avatarUrl) : null,
+                                child: avatarUrl == null || avatarUrl.isEmpty ? const Icon(Icons.person, color: AppColors.onSurfaceVariant) : null,
                               ),
                             ),
                           ],
@@ -313,13 +373,15 @@ class _QuickStartCard extends StatelessWidget {
 }
 
 class _WorkoutCard extends StatelessWidget {
-  final models.Document doc;
-  const _WorkoutCard(this.doc);
+  final Map<String, dynamic> workout;
+  const _WorkoutCard(this.workout);
 
   @override
   Widget build(BuildContext context) {
-    final started = DateTime.tryParse(doc.data['started_at']?.toString() ?? '') ?? DateTime.now();
-    final completed = doc.data['completed_at'] != null ? DateTime.tryParse(doc.data['completed_at']?.toString() ?? '') : null;
+    final startedMs = workout['startedAt'] as int? ?? 0;
+    final started = DateTime.fromMillisecondsSinceEpoch(startedMs);
+    final completedMs = workout['completedAt'] as int?;
+    final completed = completedMs != null ? DateTime.fromMillisecondsSinceEpoch(completedMs) : null;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(16),
@@ -341,27 +403,14 @@ class _WorkoutCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(doc.data['name'] ?? 'Workout', style: const TextStyle(color: AppColors.onSurface, fontWeight: FontWeight.w600, fontSize: 15)),
+                Text(workout['name']?.toString() ?? 'Workout', style: const TextStyle(color: AppColors.onSurface, fontWeight: FontWeight.w600, fontSize: 15)),
                 const SizedBox(height: 4),
-                Text(started.formatted, style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 12)),
+                Text(completed != null ? completed.formatted : started.formatted, style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 12)),
               ],
             ),
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: completed != null ? AppColors.secondaryContainer.withValues(alpha: 0.15) : AppColors.error.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              completed != null ? 'Done' : 'Active',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: completed != null ? AppColors.secondaryContainer : AppColors.error,
-              ),
-            ),
-          ),
+          if (workout['isSynced'] != true)
+            const Icon(Icons.cloud_off, size: 14, color: AppColors.onSurfaceVariant),
         ],
       ),
     );
@@ -369,13 +418,13 @@ class _WorkoutCard extends StatelessWidget {
 }
 
 class _ExerciseCard extends StatelessWidget {
-  final models.Document doc;
-  const _ExerciseCard(this.doc);
+  final Map<String, dynamic> ex;
+  const _ExerciseCard(this.ex);
 
   @override
   Widget build(BuildContext context) {
+    final img = ex['imageUrl']?.toString();
     return Container(
-      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
@@ -383,53 +432,30 @@ class _ExerciseCard extends StatelessWidget {
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(color: AppColors.secondaryContainer.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
-            child: const Icon(Icons.sports_gymnastics, color: AppColors.secondaryContainer, size: 20),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              child: img != null && img.isNotEmpty
+                  ? CachedNetworkImage(imageUrl: img, fit: BoxFit.cover, width: double.infinity,
+                      placeholder: (_, __) => Container(color: AppColors.surfaceHigh, child: const Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2))),
+                      errorWidget: (_, __, ___) => Container(color: AppColors.surfaceHigh, child: const Icon(Icons.fitness_center, color: AppColors.onSurfaceVariant)))
+                  : Container(color: AppColors.surfaceHigh, child: const Center(child: Icon(Icons.fitness_center, color: AppColors.onSurfaceVariant, size: 32))),
+            ),
           ),
-          const SizedBox(height: 12),
-          Text(doc.data['name'] ?? 'Exercise', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: AppColors.onSurface, fontWeight: FontWeight.w600, fontSize: 14)),
-          const SizedBox(height: 4),
-          Text(doc.data['muscle_group'] ?? 'General', style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 12)),
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(ex['name']?.toString() ?? 'Exercise', style: const TextStyle(color: AppColors.onSurface, fontWeight: FontWeight.w600, fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 2),
+                Text(ex['muscleGroup']?.toString() ?? 'General', style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 11)),
+              ],
+            ),
+          ),
         ],
       ),
-    );
-  }
-}
-
-class _HomeShimmer extends StatelessWidget {
-  const _HomeShimmer();
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      children: [
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(width: 40, height: 14, color: AppColors.surfaceHigh),
-                  const SizedBox(height: 8),
-                  Container(width: 120, height: 28, color: AppColors.surfaceHigh),
-                ],
-              ),
-            ),
-            const CircleAvatar(radius: 24, backgroundColor: AppColors.surfaceHigh),
-          ],
-        ),
-        const SizedBox(height: 32),
-        Container(height: 100, decoration: BoxDecoration(color: AppColors.surfaceHigh, borderRadius: BorderRadius.circular(16))),
-        const SizedBox(height: 16),
-        Container(height: 100, decoration: BoxDecoration(color: AppColors.surfaceHigh, borderRadius: BorderRadius.circular(16))),
-      ],
     );
   }
 }

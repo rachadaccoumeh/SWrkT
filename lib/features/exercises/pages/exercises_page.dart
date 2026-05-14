@@ -2,12 +2,15 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:appwrite/models.dart' as models;
-import 'package:appwrite/appwrite.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shimmer/shimmer.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/debug_log.dart';
 import '../../../data/repository/appwrite_repository.dart';
+import '../../../data/local/local_store.dart';
+import '../../../data/local/sync_manager.dart';
+import '../../auth/controllers/auth_controller.dart';
 
 class ExercisesPage extends StatefulWidget {
   const ExercisesPage({super.key});
@@ -18,22 +21,14 @@ class ExercisesPage extends StatefulWidget {
 
 class _ExercisesPageState extends State<ExercisesPage> {
   final repo = AppwriteRepository();
-  List<models.Document> exercises = [];
-  List<models.Document> filtered = [];
+  List<Map<String, dynamic>> exercises = [];
+  List<Map<String, dynamic>> filtered = [];
   bool loading = true;
   String search = '';
   models.User? user;
 
   final muscleGroups = [
-    'All',
-    'Chest',
-    'Back',
-    'Legs',
-    'Shoulders',
-    'Arms',
-    'Core',
-    'Cardio',
-    'Full Body',
+    'All', 'Chest', 'Back', 'Legs', 'Shoulders', 'Arms', 'Core', 'Cardio', 'Full Body',
   ];
   String selectedGroup = 'All';
 
@@ -44,19 +39,78 @@ class _ExercisesPageState extends State<ExercisesPage> {
   }
 
   Future<void> _load() async {
+    final log = DebugLog.instance;
+    log.ui('ExercisesPage _load() started');
     try {
-      user = await repo.getCurrentUser();
-      final list = await repo.getExercises(user!.$id);
-      exercises = list.documents;
-      _applyFilter();
-    } catch (_) {}
+      final authCtrl = Get.find<AuthController>();
+      user = authCtrl.user.value;
+      if (user == null) {
+        log.auth('No user in AuthController, fetching from Appwrite');
+        user = await repo.getCurrentUser();
+        authCtrl.user.value = user;
+      }
+      if (user == null) {
+        log.error('Still no user after getCurrentUser - redirecting to login');
+        Get.offAllNamed('/login');
+        return;
+      }
+      final uid = user!.$id;
+      log.ui('ExercisesPage userId: $uid');
+
+      // Load from local first (instant)
+      final local = LocalStore.instance.getExercises(uid);
+      log.db('Local exercises: ${local.length}');
+      if (local.isNotEmpty) {
+        exercises = local;
+        _applyFilter();
+      }
+
+      // Then fetch from Appwrite and merge
+      try {
+        log.ui('Fetching exercises from Appwrite');
+        final remote = await repo.getExercises(uid);
+        log.db('Remote exercises: ${remote.documents.length}');
+        for (final doc in remote.documents) {
+          final ex = _docToMap(doc);
+          await LocalStore.instance.saveExercise(ex);
+        }
+        exercises = LocalStore.instance.getExercises(uid);
+        log.db('Merged exercises: ${exercises.length}');
+        _applyFilter();
+      } catch (e) {
+        log.error('Failed to fetch remote exercises', data: e.toString());
+      }
+
+      // Start background sync
+      if (Get.isRegistered<SyncManager>()) {
+        log.sync('Calling queueSync() from _load()');
+        Get.find<SyncManager>().queueSync();
+      }
+    } catch (e) {
+      log.error('ExercisesPage _load() failed', data: e.toString());
+    }
     if (mounted) setState(() => loading = false);
+  }
+
+  Map<String, dynamic> _docToMap(models.Document doc) {
+    return {
+      'id': doc.$id,
+      'remoteId': doc.$id,
+      'userId': doc.data['user_id'] ?? '',
+      'name': doc.data['name'] ?? '',
+      'muscleGroup': doc.data['muscle_group'] ?? '',
+      'notes': doc.data['notes'] ?? '',
+      'imageUrl': doc.data['image_url'] ?? '',
+      'isSynced': true,
+      'createdAt': DateTime.tryParse(doc.data['created_at'] ?? '')?.millisecondsSinceEpoch ?? DateTime.now().millisecondsSinceEpoch,
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+    };
   }
 
   void _applyFilter() {
     filtered = exercises.where((e) {
-      final name = (e.data['name'] ?? '').toString().toLowerCase();
-      final group = e.data['muscle_group'] ?? '';
+      final name = (e['name'] ?? '').toString().toLowerCase();
+      final group = e['muscleGroup'] ?? '';
       final matchesSearch = name.contains(search.toLowerCase());
       final matchesGroup = selectedGroup == 'All' || group == selectedGroup;
       return matchesSearch && matchesGroup;
@@ -81,23 +135,15 @@ class _ExercisesPageState extends State<ExercisesPage> {
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
               child: Row(
                 children: [
-                  const Expanded(
-                    child: Text('Exercises', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.onSurface)),
-                  ),
-                  IconButton(
-                    onPressed: _load,
-                    icon: const Icon(Icons.refresh, color: AppColors.onSurfaceVariant),
-                  ),
+                  const Expanded(child: Text('Exercises', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.onSurface))),
+                  IconButton(onPressed: _load, icon: const Icon(Icons.refresh, color: AppColors.onSurfaceVariant)),
                 ],
               ),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: TextField(
-                onChanged: (v) {
-                  search = v;
-                  setState(_applyFilter);
-                },
+                onChanged: (v) { search = v; setState(_applyFilter); },
                 style: const TextStyle(color: AppColors.onSurface),
                 decoration: InputDecoration(
                   hintText: 'Search exercises...',
@@ -125,19 +171,10 @@ class _ExercisesPageState extends State<ExercisesPage> {
                     child: ChoiceChip(
                       label: Text(g),
                       selected: active,
-                      onSelected: (_) {
-                        setState(() {
-                          selectedGroup = g;
-                          _applyFilter();
-                        });
-                      },
+                      onSelected: (_) => setState(() { selectedGroup = g; _applyFilter(); }),
                       selectedColor: AppColors.primary.withValues(alpha: 0.15),
                       backgroundColor: AppColors.surface,
-                      labelStyle: TextStyle(
-                        color: active ? AppColors.primary : AppColors.onSurfaceVariant,
-                        fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                        fontSize: 13,
-                      ),
+                      labelStyle: TextStyle(color: active ? AppColors.primary : AppColors.onSurfaceVariant, fontWeight: active ? FontWeight.w600 : FontWeight.w500, fontSize: 13),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       side: BorderSide(color: active ? AppColors.primary.withValues(alpha: 0.3) : AppColors.outlineVariant, width: 1),
                     ),
@@ -148,11 +185,7 @@ class _ExercisesPageState extends State<ExercisesPage> {
             const SizedBox(height: 8),
             Expanded(
               child: loading
-                  ? ListView.builder(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      itemCount: 6,
-                      itemBuilder: (_, __) => const _ExerciseShimmer(),
-                    )
+                  ? ListView.builder(padding: const EdgeInsets.symmetric(horizontal: 20), itemCount: 6, itemBuilder: (_, __) => const _ExerciseShimmer())
                   : filtered.isEmpty
                       ? Center(
                           child: Column(
@@ -171,7 +204,7 @@ class _ExercisesPageState extends State<ExercisesPage> {
                           child: ListView.builder(
                             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                             itemCount: filtered.length,
-                            itemBuilder: (ctx, i) => _ExerciseListCard(filtered[i]),
+                            itemBuilder: (ctx, i) => _ExerciseListCard(filtered[i], onDelete: () => _deleteExercise(i)),
                           ),
                         ),
             ),
@@ -182,100 +215,115 @@ class _ExercisesPageState extends State<ExercisesPage> {
   }
 
   void _showAddExercise(BuildContext context) {
-    Get.to(() => const _AddExercisePage())?.then((_) => _load());
+    final uid = user?.$id ?? '';
+    if (uid.isEmpty) { Get.snackbar('Error', 'Not logged in'); return; }
+    Get.to(() => _AddExercisePage(uid: uid))?.then((_) => _load());
+  }
+
+  Future<void> _deleteExercise(int index) async {
+    final ex = filtered[index];
+    await LocalStore.instance.deleteExercise(ex['id']);
+    // Also delete from Appwrite
+    try {
+      await repo.deleteExercise(ex['id'], ex['userId'] ?? user?.$id ?? '');
+    } catch (_) {}
+    filtered.removeAt(index);
+    exercises.removeWhere((e) => e['id'] == ex['id']);
+    if (mounted) setState(() {});
   }
 }
 
 class _ExerciseListCard extends StatelessWidget {
-  final models.Document doc;
-  const _ExerciseListCard(this.doc);
+  final Map<String, dynamic> ex;
+  final VoidCallback onDelete;
+  const _ExerciseListCard(this.ex, {required this.onDelete});
 
   @override
   Widget build(BuildContext context) {
-    final img = doc.data['image_url']?.toString();
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.outlineVariant.withValues(alpha: 0.4)),
+    final img = ex['imageUrl']?.toString();
+    return Dismissible(
+      key: Key(ex['id']),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        decoration: BoxDecoration(color: AppColors.error, borderRadius: BorderRadius.circular(16)),
+        child: const Icon(Icons.delete, color: Colors.white),
       ),
-      child: Row(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: img != null && img.isNotEmpty
-                ? CachedNetworkImage(
-                    imageUrl: img,
-                    width: 56,
-                    height: 56,
-                    fit: BoxFit.cover,
-                    placeholder: (_, __) => Container(width: 56, height: 56, color: AppColors.surfaceHigh),
-                    errorWidget: (_, __, ___) => Container(width: 56, height: 56, color: AppColors.surfaceHigh, child: const Icon(Icons.image, color: AppColors.onSurfaceVariant)),
-                  )
-                : Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(color: AppColors.surfaceHigh, borderRadius: BorderRadius.circular(12)),
-                    child: const Icon(Icons.fitness_center, color: AppColors.onSurfaceVariant),
-                  ),
+      confirmDismiss: (_) async {
+        return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.surface,
+            title: const Text('Delete Exercise', style: TextStyle(color: AppColors.onSurface)),
+            content: Text('Delete "${ex['name']}"?', style: const TextStyle(color: AppColors.onSurfaceVariant)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete', style: TextStyle(color: AppColors.error))),
+            ],
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(doc.data['name'] ?? 'Exercise', style: const TextStyle(color: AppColors.onSurface, fontWeight: FontWeight.w600, fontSize: 15)),
-                const SizedBox(height: 4),
-                Text(doc.data['muscle_group'] ?? 'General', style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 12)),
-              ],
-            ),
-          ),
-          IconButton(
-            onPressed: () => _showOptions(context, doc),
-            icon: const Icon(Icons.more_vert, color: AppColors.onSurfaceVariant, size: 20),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showOptions(BuildContext context, models.Document doc) {
-    Get.bottomSheet(
-      Container(
-        padding: const EdgeInsets.all(20),
-        decoration: const BoxDecoration(
+        ) ?? false;
+      },
+      onDismissed: (_) => onDelete(),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
           color: AppColors.surface,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.outlineVariant.withValues(alpha: 0.4)),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: Row(
           children: [
-            Container(width: 40, height: 4, decoration: BoxDecoration(color: AppColors.outlineVariant, borderRadius: BorderRadius.circular(4))),
-            const SizedBox(height: 20),
-            ListTile(
-              leading: const Icon(Icons.edit, color: AppColors.primary),
-              title: const Text('Edit', style: TextStyle(color: AppColors.onSurface)),
-              onTap: () {
-                Get.back();
-                Get.to(() => _EditExercisePage(doc: doc))?.then((_) {
-                  if (context.mounted) (context as Element).markNeedsBuild();
-                });
-              },
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: img != null && img.isNotEmpty
+                  ? CachedNetworkImage(imageUrl: img, width: 56, height: 56, fit: BoxFit.cover,
+                      placeholder: (_, __) => Container(width: 56, height: 56, color: AppColors.surfaceHigh),
+                      errorWidget: (_, __, ___) => Container(width: 56, height: 56, color: AppColors.surfaceHigh, child: const Icon(Icons.image, color: AppColors.onSurfaceVariant)))
+                  : Container(width: 56, height: 56, decoration: BoxDecoration(color: AppColors.surfaceHigh, borderRadius: BorderRadius.circular(12)),
+                      child: const Icon(Icons.fitness_center, color: AppColors.onSurfaceVariant)),
             ),
-            ListTile(
-              leading: const Icon(Icons.delete, color: AppColors.error),
-              title: const Text('Delete', style: TextStyle(color: AppColors.error)),
-              onTap: () async {
-                Get.back();
-                final exUser = await AppwriteRepository().getCurrentUser();
-                await AppwriteRepository().deleteExercise(doc.$id, exUser.$id);
-                if (context.mounted) {
-                  final parent = context.findAncestorStateOfType<_ExercisesPageState>();
-                  parent?._load();
-                }
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(ex['name'] ?? 'Exercise', style: const TextStyle(color: AppColors.onSurface, fontWeight: FontWeight.w600, fontSize: 15)),
+                  const SizedBox(height: 4),
+                  Text(ex['muscleGroup'] ?? 'General', style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 12)),
+                ],
+              ),
+            ),
+            if (!(ex['isSynced'] ?? true))
+              const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Icons.cloud_off, size: 14, color: AppColors.onSurfaceVariant)),
+            IconButton(
+              onPressed: () {
+                Get.bottomSheet(
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: const BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(width: 40, height: 4, decoration: BoxDecoration(color: AppColors.outlineVariant, borderRadius: BorderRadius.circular(4))),
+                        const SizedBox(height: 20),
+                        ListTile(
+                          leading: const Icon(Icons.edit, color: AppColors.primary),
+                          title: const Text('Edit', style: TextStyle(color: AppColors.onSurface)),
+                          onTap: () { Get.back(); Get.to(() => _EditExercisePage(ex: ex))?.then((_) { }); },
+                        ),
+                        ListTile(
+                          leading: const Icon(Icons.delete, color: AppColors.error),
+                          title: const Text('Delete', style: TextStyle(color: AppColors.error)),
+                          onTap: () { Get.back(); onDelete(); },
+                        ),
+                      ],
+                    ),
+                  ),
+                );
               },
+              icon: const Icon(Icons.more_vert, color: AppColors.onSurfaceVariant, size: 20),
             ),
           ],
         ),
@@ -285,52 +333,74 @@ class _ExerciseListCard extends StatelessWidget {
 }
 
 class _AddExercisePage extends StatefulWidget {
-  const _AddExercisePage();
+  final String uid;
+  const _AddExercisePage({required this.uid});
 
   @override
   State<_AddExercisePage> createState() => _AddExercisePageState();
 }
 
 class _AddExercisePageState extends State<_AddExercisePage> {
-  final _nameCtrl = TextEditingController();
-  final _notesCtrl = TextEditingController();
-  String muscleGroup = 'Chest';
-  File? imageFile;
-  bool submitting = false;
-  final groups = ['Chest', 'Back', 'Legs', 'Shoulders', 'Arms', 'Core', 'Cardio', 'Full Body'];
+  final nameController = TextEditingController();
+  final notesController = TextEditingController();
+  String selectedMuscle = 'Chest';
+  String? imageUrl;
+  File? pickedImage;
+  bool saving = false;
+
+  final muscleGroups = ['Chest', 'Back', 'Legs', 'Shoulders', 'Arms', 'Core', 'Cardio', 'Full Body'];
 
   Future<void> _pickImage() async {
     final picker = ImagePicker();
-    final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 800, maxHeight: 800);
-    if (picked != null) setState(() => imageFile = File(picked.path));
+    final img = await picker.pickImage(source: ImageSource.gallery, maxWidth: 800);
+    if (img != null) {
+      pickedImage = File(img.path);
+      try {
+        final repo = AppwriteRepository();
+        final id = 'img_${DateTime.now().millisecondsSinceEpoch}';
+        final file = await repo.uploadImage(id, img.path);
+        imageUrl = repo.getFilePreview(file.$id);
+      } catch (_) {}
+      if (mounted) setState(() {});
+    }
   }
 
-  Future<void> _submit() async {
-    if (_nameCtrl.text.trim().isEmpty) return;
-    setState(() => submitting = true);
+  Future<void> _save() async {
+    final log = DebugLog.instance;
+    if (nameController.text.trim().isEmpty) return;
+    setState(() => saving = true);
+    log.ui('_save() called for new exercise');
     try {
-      final user = await AppwriteRepository().getCurrentUser();
-      String? imageUrl;
-      if (imageFile != null) {
-        final fileId = ID.unique();
-        final file = await AppwriteRepository().uploadImage(fileId, imageFile!.path);
-        imageUrl = AppwriteRepository().getFilePreview(file.$id);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final id = 'ex_${now}_${widget.uid}';
+      log.db('Creating exercise with id: $id, userId: ${widget.uid}');
+
+      final ex = {
+        'id': id,
+        'remoteId': '',
+        'userId': widget.uid,
+        'name': nameController.text.trim(),
+        'muscleGroup': selectedMuscle,
+        'notes': notesController.text.trim(),
+        'imageUrl': imageUrl ?? '',
+        'isSynced': false,
+        'createdAt': now,
+        'updatedAt': now,
+      };
+      await LocalStore.instance.saveExercise(ex);
+      log.db('Exercise saved to local store');
+
+      if (Get.isRegistered<SyncManager>()) {
+        log.sync('Calling queueSync() from _save()');
+        Get.find<SyncManager>().queueSync();
+      } else {
+        log.sync('SyncManager not registered!');
       }
-      await AppwriteRepository().createExercise(user!.$id, {
-        'name': _nameCtrl.text.trim(),
-        'muscle_group': muscleGroup,
-        'notes': _notesCtrl.text.trim(),
-        'image_url': imageUrl ?? '',
-        'user_id': user.$id,
-        'is_custom': true,
-        'created_at': DateTime.now().toIso8601String(),
-      });
       Get.back();
     } catch (e) {
-      Get.snackbar('Error', 'Failed to add exercise', snackPosition: SnackPosition.BOTTOM);
-    } finally {
-      if (mounted) setState(() => submitting = false);
+      log.error('_save() failed', data: e.toString());
     }
+    if (mounted) setState(() => saving = false);
   }
 
   @override
@@ -338,78 +408,61 @@ class _AddExercisePageState extends State<_AddExercisePage> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Add Exercise', style: TextStyle(color: AppColors.onSurface, fontSize: 18, fontWeight: FontWeight.w600)),
         backgroundColor: AppColors.background,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: AppColors.onSurface),
+        foregroundColor: AppColors.onSurface,
+        title: const Text('Add Exercise', style: TextStyle(fontWeight: FontWeight.w600)),
+        actions: [TextButton(onPressed: saving ? null : _save, child: saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600)))],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _Field(label: 'Exercise Name', controller: _nameCtrl, hint: 'e.g. Bench Press'),
-            const SizedBox(height: 16),
-            const Text('Muscle Group', style: TextStyle(color: AppColors.onSurfaceVariant, fontSize: 13, fontWeight: FontWeight.w500)),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: groups.map((g) {
-                final active = g == muscleGroup;
-                return ChoiceChip(
-                  label: Text(g),
-                  selected: active,
-                  onSelected: (_) => setState(() => muscleGroup = g),
-                  selectedColor: AppColors.primary.withValues(alpha: 0.15),
-                  backgroundColor: AppColors.surface,
-                  labelStyle: TextStyle(color: active ? AppColors.primary : AppColors.onSurfaceVariant, fontWeight: active ? FontWeight.w600 : FontWeight.w500),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  side: BorderSide(color: active ? AppColors.primary.withValues(alpha: 0.3) : AppColors.outlineVariant, width: 1),
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 16),
-            _Field(label: 'Notes (optional)', controller: _notesCtrl, hint: 'Form tips, variations...', maxLines: 3),
-            const SizedBox(height: 20),
             GestureDetector(
               onTap: _pickImage,
               child: Container(
+                height: 160,
                 width: double.infinity,
-                height: 140,
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.outlineVariant.withValues(alpha: 0.5)),
-                ),
-                child: imageFile != null
-                    ? ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.file(imageFile!, fit: BoxFit.cover, width: double.infinity))
-                    : const Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.image_outlined, color: AppColors.onSurfaceVariant, size: 32),
-                          SizedBox(height: 8),
-                          Text('Tap to add image', style: TextStyle(color: AppColors.onSurfaceVariant, fontSize: 13)),
-                        ],
-                      ),
+                decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(16), border: Border.all(color: AppColors.outlineVariant.withValues(alpha: 0.4))),
+                child: pickedImage != null
+                    ? ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.file(pickedImage!, fit: BoxFit.cover))
+                    : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        const Icon(Icons.add_photo_alternate_outlined, size: 40, color: AppColors.onSurfaceVariant),
+                        const SizedBox(height: 8),
+                        Text('Add Photo', style: TextStyle(color: AppColors.onSurfaceVariant.withValues(alpha: 0.7), fontSize: 13)),
+                      ]),
               ),
             ),
-            const SizedBox(height: 32),
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: ElevatedButton(
-                onPressed: submitting ? null : _submit,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.secondaryContainer,
-                  foregroundColor: AppColors.background,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  elevation: 0,
-                ),
-                child: submitting
-                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.background))
-                    : const Text('Save Exercise', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-              ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: nameController,
+              style: const TextStyle(color: AppColors.onSurface),
+              decoration: InputDecoration(labelText: 'Exercise Name', labelStyle: const TextStyle(color: AppColors.onSurfaceVariant),
+                  filled: true, fillColor: AppColors.surface, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none)),
+            ),
+            const SizedBox(height: 16),
+            const Text('Muscle Group', style: TextStyle(color: AppColors.onSurfaceVariant, fontSize: 13, fontWeight: FontWeight.w500)),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, runSpacing: 8, children: muscleGroups.map((g) {
+              final selected = g == selectedMuscle;
+              return ChoiceChip(
+                label: Text(g),
+                selected: selected,
+                onSelected: (_) => setState(() => selectedMuscle = g),
+                selectedColor: AppColors.primary.withValues(alpha: 0.15),
+                backgroundColor: AppColors.surface,
+                labelStyle: TextStyle(color: selected ? AppColors.primary : AppColors.onSurfaceVariant, fontSize: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                side: BorderSide(color: selected ? AppColors.primary.withValues(alpha: 0.3) : AppColors.outlineVariant),
+              );
+            }).toList()),
+            const SizedBox(height: 16),
+            TextField(
+              controller: notesController,
+              maxLines: 3,
+              style: const TextStyle(color: AppColors.onSurface),
+              decoration: InputDecoration(labelText: 'Notes (optional)', labelStyle: const TextStyle(color: AppColors.onSurfaceVariant),
+                  filled: true, fillColor: AppColors.surface, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none)),
             ),
           ],
         ),
@@ -419,35 +472,65 @@ class _AddExercisePageState extends State<_AddExercisePage> {
 }
 
 class _EditExercisePage extends StatefulWidget {
-  final models.Document doc;
-  const _EditExercisePage({required this.doc});
+  final Map<String, dynamic> ex;
+  const _EditExercisePage({required this.ex});
 
   @override
   State<_EditExercisePage> createState() => _EditExercisePageState();
 }
 
 class _EditExercisePageState extends State<_EditExercisePage> {
-  late final _nameCtrl = TextEditingController(text: widget.doc.data['name']);
-  late final _notesCtrl = TextEditingController(text: widget.doc.data['notes'] ?? '');
-  late String muscleGroup = widget.doc.data['muscle_group'] ?? 'Chest';
-  bool submitting = false;
-  final groups = ['Chest', 'Back', 'Legs', 'Shoulders', 'Arms', 'Core', 'Cardio', 'Full Body'];
+  late TextEditingController nameController;
+  late TextEditingController notesController;
+  late String selectedMuscle;
+  String? imageUrl;
+  File? pickedImage;
+  bool saving = false;
 
-  Future<void> _submit() async {
-    if (_nameCtrl.text.trim().isEmpty) return;
-    setState(() => submitting = true);
-    try {
-      await AppwriteRepository().updateExercise(widget.doc.$id, {
-        'name': _nameCtrl.text.trim(),
-        'muscle_group': muscleGroup,
-        'notes': _notesCtrl.text.trim(),
-      }, '');
-      Get.back();
-    } catch (e) {
-      Get.snackbar('Error', 'Failed to update', snackPosition: SnackPosition.BOTTOM);
-    } finally {
-      if (mounted) setState(() => submitting = false);
+  final muscleGroups = ['Chest', 'Back', 'Legs', 'Shoulders', 'Arms', 'Core', 'Cardio', 'Full Body'];
+
+  @override
+  void initState() {
+    super.initState();
+    nameController = TextEditingController(text: widget.ex['name'] ?? '');
+    notesController = TextEditingController(text: widget.ex['notes'] ?? '');
+    selectedMuscle = widget.ex['muscleGroup'] ?? 'Chest';
+    imageUrl = widget.ex['imageUrl'];
+  }
+
+  Future<void> _pickImage() async {
+    final picker = ImagePicker();
+    final img = await picker.pickImage(source: ImageSource.gallery, maxWidth: 800);
+    if (img != null) {
+      pickedImage = File(img.path);
+      try {
+        final repo = AppwriteRepository();
+        final id = 'img_${DateTime.now().millisecondsSinceEpoch}';
+        final file = await repo.uploadImage(id, img.path);
+        imageUrl = repo.getFilePreview(file.$id);
+      } catch (_) {}
+      if (mounted) setState(() {});
     }
+  }
+
+  Future<void> _save() async {
+    if (nameController.text.trim().isEmpty) return;
+    setState(() => saving = true);
+    try {
+      final updated = {
+        ...widget.ex,
+        'name': nameController.text.trim(),
+        'muscleGroup': selectedMuscle,
+        'notes': notesController.text.trim(),
+        'imageUrl': imageUrl ?? '',
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+        'isSynced': false,
+      };
+      await LocalStore.instance.saveExercise(updated);
+      if (Get.isRegistered<SyncManager>()) Get.find<SyncManager>().queueSync();
+      Get.back();
+    } catch (_) {}
+    if (mounted) setState(() => saving = false);
   }
 
   @override
@@ -455,88 +538,71 @@ class _EditExercisePageState extends State<_EditExercisePage> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Edit Exercise', style: TextStyle(color: AppColors.onSurface, fontSize: 18, fontWeight: FontWeight.w600)),
         backgroundColor: AppColors.background,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: AppColors.onSurface),
+        foregroundColor: AppColors.onSurface,
+        title: const Text('Edit Exercise', style: TextStyle(fontWeight: FontWeight.w600)),
+        actions: [TextButton(onPressed: saving ? null : _save, child: saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600)))],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _Field(label: 'Exercise Name', controller: _nameCtrl, hint: 'e.g. Bench Press'),
+            GestureDetector(
+              onTap: _pickImage,
+              child: Container(
+                height: 160,
+                width: double.infinity,
+                decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(16), border: Border.all(color: AppColors.outlineVariant.withValues(alpha: 0.4))),
+                child: pickedImage != null
+                    ? ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.file(pickedImage!, fit: BoxFit.cover))
+                    : imageUrl != null && imageUrl!.isNotEmpty
+                        ? ClipRRect(borderRadius: BorderRadius.circular(16), child: CachedNetworkImage(imageUrl: imageUrl!, fit: BoxFit.cover, errorWidget: (_, __, ___) => _imagePlaceholder()))
+                        : _imagePlaceholder(),
+              ),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: nameController,
+              style: const TextStyle(color: AppColors.onSurface),
+              decoration: InputDecoration(labelText: 'Exercise Name', labelStyle: const TextStyle(color: AppColors.onSurfaceVariant),
+                  filled: true, fillColor: AppColors.surface, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none)),
+            ),
             const SizedBox(height: 16),
             const Text('Muscle Group', style: TextStyle(color: AppColors.onSurfaceVariant, fontSize: 13, fontWeight: FontWeight.w500)),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: groups.map((g) {
-                final active = g == muscleGroup;
-                return ChoiceChip(
-                  label: Text(g),
-                  selected: active,
-                  onSelected: (_) => setState(() => muscleGroup = g),
-                  selectedColor: AppColors.primary.withValues(alpha: 0.15),
-                  backgroundColor: AppColors.surface,
-                  labelStyle: TextStyle(color: active ? AppColors.primary : AppColors.onSurfaceVariant, fontWeight: active ? FontWeight.w600 : FontWeight.w500),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  side: BorderSide(color: active ? AppColors.primary.withValues(alpha: 0.3) : AppColors.outlineVariant, width: 1),
-                );
-              }).toList(),
-            ),
+            Wrap(spacing: 8, runSpacing: 8, children: muscleGroups.map((g) {
+              final selected = g == selectedMuscle;
+              return ChoiceChip(
+                label: Text(g),
+                selected: selected,
+                onSelected: (_) => setState(() => selectedMuscle = g),
+                selectedColor: AppColors.primary.withValues(alpha: 0.15),
+                backgroundColor: AppColors.surface,
+                labelStyle: TextStyle(color: selected ? AppColors.primary : AppColors.onSurfaceVariant, fontSize: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                side: BorderSide(color: selected ? AppColors.primary.withValues(alpha: 0.3) : AppColors.outlineVariant),
+              );
+            }).toList()),
             const SizedBox(height: 16),
-            _Field(label: 'Notes (optional)', controller: _notesCtrl, hint: 'Form tips...', maxLines: 3),
-            const SizedBox(height: 32),
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: ElevatedButton(
-                onPressed: submitting ? null : _submit,
-                style: ElevatedButton.styleFrom(backgroundColor: AppColors.secondaryContainer, foregroundColor: AppColors.background, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)), elevation: 0),
-                child: submitting
-                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.background))
-                    : const Text('Update Exercise', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-              ),
+            TextField(
+              controller: notesController,
+              maxLines: 3,
+              style: const TextStyle(color: AppColors.onSurface),
+              decoration: InputDecoration(labelText: 'Notes (optional)', labelStyle: const TextStyle(color: AppColors.onSurfaceVariant),
+                  filled: true, fillColor: AppColors.surface, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none)),
             ),
           ],
         ),
       ),
     );
   }
-}
 
-class _Field extends StatelessWidget {
-  final String label;
-  final String hint;
-  final TextEditingController controller;
-  final int maxLines;
-  const _Field({required this.label, required this.hint, required this.controller, this.maxLines = 1});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 13, fontWeight: FontWeight.w500)),
-        const SizedBox(height: 8),
-        TextField(
-          controller: controller,
-          maxLines: maxLines,
-          style: const TextStyle(color: AppColors.onSurface, fontSize: 16),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: TextStyle(color: AppColors.onSurfaceVariant.withValues(alpha: 0.5)),
-            filled: true,
-            fillColor: AppColors.surface,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-          ),
-        ),
-      ],
-    );
-  }
+  Widget _imagePlaceholder() => Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      const Icon(Icons.add_photo_alternate_outlined, size: 40, color: AppColors.onSurfaceVariant),
+      const SizedBox(height: 8),
+      Text('Change Photo', style: TextStyle(color: AppColors.onSurfaceVariant.withValues(alpha: 0.7), fontSize: 13)),
+    ]);
 }
 
 class _ExerciseShimmer extends StatelessWidget {
@@ -548,8 +614,8 @@ class _ExerciseShimmer extends StatelessWidget {
       baseColor: AppColors.surface,
       highlightColor: AppColors.surfaceHigh,
       child: Container(
+        height: 84,
         margin: const EdgeInsets.only(bottom: 10),
-        height: 80,
         decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(16)),
       ),
     );

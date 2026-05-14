@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:get/get.dart';
 import 'package:appwrite/models.dart' as models;
-import 'package:appwrite/appwrite.dart';
-import 'dart:math';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/extensions.dart';
 import '../../../data/repository/appwrite_repository.dart';
+import '../../../data/local/local_store.dart';
+import '../../../data/local/sync_manager.dart';
+import '../../auth/controllers/auth_controller.dart';
 
 class ProgressPage extends StatefulWidget {
   const ProgressPage({super.key});
@@ -15,82 +16,94 @@ class ProgressPage extends StatefulWidget {
   State<ProgressPage> createState() => _ProgressPageState();
 }
 
-class _ProgressPageState extends State<ProgressPage> with SingleTickerProviderStateMixin {
+class _ProgressPageState extends State<ProgressPage> {
   final repo = AppwriteRepository();
-  List<models.Document> workouts = [];
-  List<models.Document> sets = [];
-  List<models.Document> exercises = [];
+  List<Map<String, dynamic>> allWorkouts = [];
+  List<Map<String, dynamic>> allSets = [];
   bool loading = true;
-  late TabController _tabCtrl;
-  int touchedIndex = -1;
 
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 3, vsync: this);
     _load();
-  }
-
-  @override
-  void dispose() {
-    _tabCtrl.dispose();
-    super.dispose();
   }
 
   Future<void> _load() async {
     try {
-      final user = await repo.getCurrentUser();
-      final w = await repo.getWorkouts(user.$id);
-      workouts = w.documents.where((d) => d.data['is_active'] == false).toList();
-      final e = await repo.getExercises(user.$id);
-      exercises = e.documents;
-      final s = await repo.getAllSets(user.$id);
-      sets = s.documents;
+      final authCtrl = Get.find<AuthController>();
+      var u = authCtrl.user.value;
+      if (u == null) {
+        u = await repo.getCurrentUser();
+        authCtrl.user.value = u;
+      }
+      final uid = u.$id;
+
+      // Load from local first (instant)
+      allWorkouts = LocalStore.instance.getWorkouts(uid);
+      allSets = LocalStore.instance.getAllSetsForUser(uid);
+
+      // Then sync from Appwrite in background
+      try {
+        final remoteWorkouts = await repo.getWorkouts(uid);
+        for (final doc in remoteWorkouts.documents) {
+          await LocalStore.instance.saveWorkout(_docToWorkout(doc));
+        }
+        final remoteSets = await repo.getAllSets(uid);
+        for (final doc in remoteSets.documents) {
+          await LocalStore.instance.saveSet(_docToSet(doc));
+        }
+        allWorkouts = LocalStore.instance.getWorkouts(uid);
+        allSets = LocalStore.instance.getAllSetsForUser(uid);
+      } catch (_) {}
+
+      if (Get.isRegistered<SyncManager>()) Get.find<SyncManager>().queueSync();
     } catch (_) {}
     if (mounted) setState(() => loading = false);
   }
 
-  int get workoutCount => workouts.length;
-  int get totalSets => sets.where((s) => s.data['is_completed'] == true).length;
-  int get totalReps => sets.where((s) => s.data['is_completed'] == true).fold(0, (sum, s) => sum + ((s.data['reps'] ?? 0) as num).toInt());
-  double get totalVolume => sets.where((s) => s.data['is_completed'] == true).fold(0.0, (sum, s) => sum + ((s.data['reps'] ?? 0) as num).toInt() * ((s.data['weight'] ?? 0.0) as num).toDouble());
+  Map<String, dynamic> _docToWorkout(models.Document doc) => {
+    'id': doc.$id, 'remoteId': doc.$id, 'userId': doc.data['user_id'] ?? '', 'name': doc.data['name'] ?? '',
+    'isActive': doc.data['is_active'] ?? false, 'isSynced': true,
+    'startedAt': DateTime.tryParse(doc.data['started_at'] ?? '')?.millisecondsSinceEpoch ?? 0,
+    'completedAt': doc.data['completed_at'] != null ? DateTime.tryParse(doc.data['completed_at'])?.millisecondsSinceEpoch : null,
+    'createdAt': DateTime.now().millisecondsSinceEpoch, 'updatedAt': DateTime.now().millisecondsSinceEpoch,
+  };
 
-  int get streakDays {
-    if (workouts.isEmpty) return 0;
-    final dates = workouts.map((w) {
-      final s = w.data['completed_at'] ?? w.data['started_at'];
-      return DateTime.tryParse(s?.toString() ?? '') ?? DateTime.now();
-    }).map((d) => DateTime(d.year, d.month, d.day)).toSet().toList();
-    dates.sort((a, b) => b.compareTo(a));
-    int streak = 0;
-    DateTime check = DateTime.now();
-    for (final d in dates) {
-      if (d.isAtSameDay(check) || d.isAtSameDay(check.subtract(const Duration(days: 1)))) {
-        streak++;
-        check = d.subtract(const Duration(days: 1));
-      } else if (d.isBefore(check)) {
-        break;
-      }
+  Map<String, dynamic> _docToSet(models.Document doc) => {
+    'id': doc.$id, 'remoteId': doc.$id, 'userId': doc.data['user_id'] ?? '', 'workoutId': doc.data['workout_id'] ?? '',
+    'exerciseId': doc.data['exercise_id'], 'setNumber': doc.data['set_number'] ?? 0,
+    'reps': doc.data['reps'] ?? 0, 'weight': (doc.data['weight'] ?? 0.0).toDouble(),
+    'isCompleted': doc.data['is_completed'] ?? false, 'isSynced': true,
+    'createdAt': DateTime.now().millisecondsSinceEpoch, 'updatedAt': DateTime.now().millisecondsSinceEpoch,
+  };
+
+  int get totalWorkouts => allWorkouts.where((w) => w['isActive'] != true).length;
+  int get totalSets => allSets.where((s) => s['isCompleted'] == true).length;
+  int get totalReps => allSets.where((s) => s['isCompleted'] == true).fold(0, (sum, s) => sum + ((s['reps'] ?? 0) as num).toInt());
+  double get totalVolume => allSets.where((s) => s['isCompleted'] == true).fold(0.0, (sum, s) => sum + ((s['reps'] ?? 0) as num).toInt() * ((s['weight'] ?? 0.0) as num).toDouble());
+
+  Map<String, int> get weeklyData {
+    final now = DateTime.now();
+    final map = <String, int>{};
+    for (int i = 6; i >= 0; i--) {
+      final d = now.subtract(Duration(days: i));
+      final key = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d.weekday - 1];
+      final dayStart = DateTime(d.year, d.month, d.day).millisecondsSinceEpoch;
+      final dayEnd = dayStart + 86400000;
+      map[key] = allWorkouts.where((w) {
+        final ts = w['completedAt'] ?? w['startedAt'] ?? 0;
+        return ts >= dayStart && ts < dayEnd && w['isActive'] != true;
+      }).length;
     }
-    return streak;
+    return map;
   }
 
-  Map<String, int> get workoutsByDay {
-    final map = <String, int>{};
-    final now = DateTime.now();
-    for (int i = 6; i >= 0; i--) {
-      final day = now.subtract(Duration(days: i));
-      map[day.weekdayShort.substring(0, 1)] = 0;
-    }
-    for (final w in workouts) {
-      final s = w.data['completed_at'] ?? w.data['started_at'];
-      final d = DateTime.tryParse(s?.toString() ?? '');
-      if (d == null) continue;
-      final diff = now.difference(d).inDays;
-      if (diff < 7) {
-        final key = d.weekdayShort.substring(0, 1);
-        map[key] = (map[key] ?? 0) + 1;
-      }
+  Map<String, double> get prs {
+    final map = <String, double>{};
+    for (final s in allSets.where((s) => s['isCompleted'] == true)) {
+      final exId = s['exerciseId']?.toString() ?? 'unknown';
+      final w = (s['weight'] as num).toDouble();
+      if (!map.containsKey(exId) || w > map[exId]!) map[exId] = w;
     }
     return map;
   }
@@ -102,57 +115,45 @@ class _ProgressPageState extends State<ProgressPage> with SingleTickerProviderSt
       body: SafeArea(
         child: loading
             ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-            : Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Progress', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700)),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(10)),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.local_fire_department, color: Color(0xFFFF8C42), size: 18),
-                              const SizedBox(width: 4),
-                              Text('$streakDays day streak', style: const TextStyle(color: AppColors.onSurface, fontWeight: FontWeight.w600, fontSize: 13)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: RefreshIndicator(
-                      onRefresh: _load,
-                      color: AppColors.primary,
-                      backgroundColor: AppColors.surface,
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+            : RefreshIndicator(
+                onRefresh: _load,
+                color: AppColors.primary,
+                backgroundColor: AppColors.surface,
+                child: CustomScrollView(
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                        child: Row(
                           children: [
-                            const SizedBox(height: 8),
-                            _StatsGrid(
-                              count: workoutCount,
-                              sets: totalSets,
-                              reps: totalReps,
-                              volume: totalVolume,
-                            ),
-                            const SizedBox(height: 24),
-                            _WeeklyChart(data: workoutsByDay),
-                            const SizedBox(height: 24),
-                            _RecentPRs(sets: sets, exercises: exercises),
-                            const SizedBox(height: 32),
+                            const Expanded(child: Text('Progress', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.onSurface))),
+                            IconButton(onPressed: _load, icon: const Icon(Icons.refresh, color: AppColors.onSurfaceVariant)),
                           ],
                         ),
                       ),
                     ),
-                  ),
-                ],
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        child: _StatsGrid(count: totalWorkouts, sets: totalSets, reps: totalReps, volume: totalVolume),
+                      ),
+                    ),
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                        child: _WeeklyChart(data: weeklyData),
+                      ),
+                    ),
+                    if (prs.isNotEmpty)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                          child: _PRSection(prs: prs),
+                        ),
+                      ),
+                    const SliverToBoxAdapter(child: SizedBox(height: 32)),
+                  ],
+                ),
               ),
       ),
     );
@@ -160,10 +161,7 @@ class _ProgressPageState extends State<ProgressPage> with SingleTickerProviderSt
 }
 
 class _StatsGrid extends StatelessWidget {
-  final int count;
-  final int sets;
-  final int reps;
-  final double volume;
+  final int count; final int sets; final int reps; final double volume;
   const _StatsGrid({required this.count, required this.sets, required this.reps, required this.volume});
 
   @override
@@ -187,10 +185,7 @@ class _StatsGrid extends StatelessWidget {
 }
 
 class _StatCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final IconData icon;
-  final Color color;
+  final String label; final String value; final IconData icon; final Color color;
   const _StatCard({required this.label, required this.value, required this.icon, required this.color});
 
   @override
@@ -231,7 +226,7 @@ class _WeeklyChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final keys = data.keys.toList();
-    final maxVal = data.values.fold(0, (a, b) => a > b ? a : b);
+    final maxVal = data.values.fold(1, (a, b) => a > b ? a : b);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -248,41 +243,38 @@ class _WeeklyChart extends StatelessWidget {
             height: 140,
             child: BarChart(
               BarChartData(
-                maxY: max(maxVal.toDouble(), 1),
-                barGroups: List.generate(keys.length, (i) {
-                  return BarChartGroupData(
-                    x: i,
-                    barRods: [
-                      BarChartRodData(
-                        toY: data[keys[i]]!.toDouble(),
-                        color: data[keys[i]]! > 0 ? AppColors.primary : AppColors.outlineVariant.withValues(alpha: 0.3),
-                        width: 18,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                    ],
-                  );
-                }),
-                gridData: FlGridData(show: false),
-                titlesData: FlTitlesData(
-                  leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      getTitlesWidget: (v, meta) {
-                        final idx = v.toInt();
-                        if (idx < 0 || idx >= keys.length) return const SizedBox.shrink();
-                        return Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Text(keys[idx], style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 12, fontWeight: FontWeight.w500)),
-                        );
-                      },
-                    ),
+                alignment: BarChartAlignment.spaceAround,
+                maxY: maxVal.toDouble() + 1,
+                barTouchData: BarTouchData(enabled: true, touchTooltipData: BarTouchTooltipData(
+                  getTooltipItem: (group, groupIndex, rod, rodIndex) => BarTooltipItem(
+                    '${rod.toY.toInt()} workouts', const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
                   ),
+                )),
+                titlesData: FlTitlesData(
+                  show: true,
+                  bottomTitles: AxisTitles(sideTitles: SideTitles(
+                    showTitles: true,
+                    getTitlesWidget: (value, meta) => Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(keys[value.toInt()], style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 11)),
+                    ),
+                    reservedSize: 30,
+                  )),
+                  leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                 ),
+                gridData: const FlGridData(show: false),
                 borderData: FlBorderData(show: false),
-                barTouchData: BarTouchData(enabled: true),
+                barGroups: List.generate(keys.length, (i) => BarChartGroupData(
+                  x: i,
+                  barRods: [BarChartRodData(
+                    toY: data[keys[i]]!.toDouble(),
+                    color: AppColors.primary,
+                    width: 20,
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+                  )],
+                )),
               ),
             ),
           ),
@@ -292,59 +284,56 @@ class _WeeklyChart extends StatelessWidget {
   }
 }
 
-class _RecentPRs extends StatelessWidget {
-  final List<models.Document> sets;
-  final List<models.Document> exercises;
-  const _RecentPRs({required this.sets, required this.exercises});
+class _PRSection extends StatelessWidget {
+  final Map<String, double> prs;
+  const _PRSection({required this.prs});
 
   @override
   Widget build(BuildContext context) {
-    final prs = <String, double>{};
-    for (final s in sets) {
-      if (s.data['is_completed'] != true) continue;
-      final exId = s.data['exercise_id']?.toString();
-      final w = (s.data['weight'] ?? 0.0) as num;
-      if (exId != null && w.toDouble() > (prs[exId] ?? 0.0)) prs[exId] = w.toDouble();
-    }
     final sorted = prs.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
     final top = sorted.take(5).toList();
-    if (top.isEmpty) return const SizedBox.shrink();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Personal Records', style: TextStyle(color: AppColors.onSurface, fontSize: 16, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 12),
-        ...top.map((e) {
-          final ex = exercises.firstWhereOrNull((x) => x.$id == e.key);
-          return Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.outlineVariant.withValues(alpha: 0.3)),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(color: const Color(0xFFFF8C42).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
-                  child: const Icon(Icons.emoji_events, color: Color(0xFFFF8C42), size: 18),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Text(ex?.data['name'] ?? 'Unknown', style: const TextStyle(color: AppColors.onSurface, fontWeight: FontWeight.w600)),
-                ),
-                Text('${e.value.clean} lbs', style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700, fontSize: 15)),
-              ],
-            ),
-          );
-        }),
-      ],
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.outlineVariant.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: const Color(0xFFFF8C42).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
+                child: const Icon(Icons.emoji_events, color: Color(0xFFFF8C42), size: 18),
+              ),
+              const SizedBox(width: 10),
+              const Text('Personal Records', style: TextStyle(color: AppColors.onSurface, fontSize: 16, fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...top.map((e) {
+            final name = e.key;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(name, style: const TextStyle(color: AppColors.onSurface, fontSize: 14, fontWeight: FontWeight.w500)),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(color: AppColors.primary.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                    child: Text('${e.value.toStringAsFixed(1)} lbs', style: const TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
     );
   }
-}
-
-extension DateTimeExt on DateTime {
-  bool isAtSameDay(DateTime other) => year == other.year && month == other.month && day == other.day;
 }

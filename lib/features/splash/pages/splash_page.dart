@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/theme/app_colors.dart';
-import '../../../data/repository/appwrite_repository.dart';
 import '../../../routes/app_routes.dart';
+import '../../auth/controllers/auth_controller.dart';
 
 class SplashPage extends StatefulWidget {
   const SplashPage({super.key});
@@ -54,18 +54,23 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
   }
 
   Future<void> _checkAuthAndNavigate() async {
-    await Future.delayed(const Duration(seconds: 3));
-
+    // Check auth while animation plays via AuthController
     bool isLoggedIn = false;
     try {
-      await AppwriteRepository().getCurrentUser();
-      isLoggedIn = true;
-    } catch (_) {
-      isLoggedIn = false;
+      if (Get.isRegistered<AuthController>()) {
+        final authCtrl = Get.find<AuthController>();
+        await authCtrl.checkSession();
+        isLoggedIn = authCtrl.isLoggedIn.value;
+      }
+    } catch (_) {}
+
+    // Wait for animation to complete
+    if (_animCtrl.status != AnimationStatus.completed) {
+      await _animCtrl.forward(from: _animCtrl.value);
     }
+    await Future.delayed(const Duration(milliseconds: 300));
 
     if (!mounted) return;
-
     final destination = isLoggedIn ? AppRoutes.home : AppRoutes.login;
     Get.offAllNamed(destination);
   }
