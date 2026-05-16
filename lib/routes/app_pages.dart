@@ -3,6 +3,7 @@ import '../features/splash/pages/splash_page.dart';
 import '../features/auth/pages/login_page.dart';
 import '../features/auth/pages/signup_page.dart';
 import '../features/main_navigation/pages/main_navigation_page.dart';
+import '../features/subscription/pages/subscription_page.dart';
 import 'app_routes.dart';
 
 abstract final class AppPages {
@@ -22,6 +23,10 @@ abstract final class AppPages {
     GetPage(
       name: AppRoutes.home,
       page: () => const MainNavigationPage(),
+    ),
+    GetPage(
+      name: AppRoutes.subscription,
+      page: () => const SubscriptionPage(),
     ),
   ];
 }

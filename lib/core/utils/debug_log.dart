@@ -56,6 +56,9 @@ class DebugLog {
   void ui(String msg, {dynamic data}) => log('UI', msg, data: data);
   void api(String msg, {dynamic data}) => log('API', msg, data: data);
   void error(String msg, {dynamic data}) => log('ERROR', msg, data: data);
+  void subs(String msg, {dynamic data}) => log('SUBS', msg, data: data);
+  void admin(String msg, {dynamic data}) => log('ADMIN', msg, data: data);
+  void info(String msg, {dynamic data}) => log('INFO', msg, data: data);
 
   /// Returns all log files and their sizes for sharing in settings
   Future<List<Map<String, dynamic>>> getLogFiles() async {

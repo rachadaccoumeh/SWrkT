@@ -4,6 +4,11 @@ import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'core/theme/app_theme.dart';
 import 'core/utils/debug_log.dart';
+import 'core/utils/access_control.dart';
+import 'core/services/subscription_service.dart';
+import 'core/services/ad_service.dart';
+import 'core/services/store_service.dart';
+import 'core/services/admin_service.dart';
 import 'data/local/local_store.dart';
 import 'data/local/sync_manager.dart';
 import 'routes/app_pages.dart';
@@ -24,10 +29,32 @@ void main() async {
   LocalStore.instance = localStore;
   await localStore.init();
 
-  // Register SyncManager
+  // Register core services (order matters)
   Get.put(SyncManager(localStore), permanent: true);
-  // Register AuthController
   Get.put(AuthController(), permanent: true);
+
+  // Initialize subscription service and wait for it
+  final subsService = SubscriptionService();
+  Get.put(subsService, permanent: true);
+  await subsService.init();
+
+  // Initialize ad service (depends on subscription service)
+  final adService = AdService();
+  Get.put(adService, permanent: true);
+  await adService.init();
+
+  // Initialize store service (depends on subscription service)
+  final storeService = StoreService();
+  Get.put(storeService, permanent: true);
+  await storeService.init();
+
+  // Initialize admin service
+  Get.put(AdminService(), permanent: true);
+
+  // Initialize AccessControl helper
+  final accessControl = AccessControl();
+  Get.put(accessControl, permanent: true);
+  await accessControl.init();
 
   // Load theme
   bool isDark = true;

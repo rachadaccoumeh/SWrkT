@@ -23,6 +23,7 @@ class _WorkoutPageState extends State<WorkoutPage> {
   List<Map<String, dynamic>> workoutSets = [];
   bool loading = true;
   String? userId;
+  String weightUnit = 'lbs';
 
   @override
   void initState() {
@@ -46,6 +47,12 @@ class _WorkoutPageState extends State<WorkoutPage> {
         workoutSets = LocalStore.instance.getSetsForWorkout(activeWorkout!['id']);
       }
       exercises = LocalStore.instance.getExercises(userId!);
+
+      // Load weight unit preference
+      final prefs = LocalStore.instance.getPrefs(userId!);
+      if (prefs != null) {
+        weightUnit = prefs['weightUnit'] ?? 'lbs';
+      }
 
       // Then fetch from Appwrite in background and merge
       try {
@@ -110,6 +117,7 @@ class _WorkoutPageState extends State<WorkoutPage> {
                     sets: workoutSets,
                     exercises: exercises,
                     userId: userId!,
+                    weightUnit: weightUnit,
                     onRefresh: _load,
                   ),
       ),
@@ -219,8 +227,9 @@ class _ActiveWorkoutView extends StatefulWidget {
   final List<Map<String, dynamic>> sets;
   final List<Map<String, dynamic>> exercises;
   final String userId;
+  final String weightUnit;
   final VoidCallback onRefresh;
-  const _ActiveWorkoutView({required this.workout, required this.sets, required this.exercises, required this.userId, required this.onRefresh});
+  const _ActiveWorkoutView({required this.workout, required this.sets, required this.exercises, required this.userId, required this.weightUnit, required this.onRefresh});
 
   @override
   State<_ActiveWorkoutView> createState() => _ActiveWorkoutViewState();
@@ -402,6 +411,7 @@ class _ActiveWorkoutViewState extends State<_ActiveWorkoutView> {
                 return _ExerciseSetGroup(
                   exerciseName: _exerciseName(exId),
                   sets: sets,
+                  weightUnit: widget.weightUnit,
                   onToggle: (idx) => _toggleSet(sets[idx], _sets.indexOf(sets[idx])),
                   onUpdate: (idx, reps, weight) => _updateSetRepsWeight(sets[idx], _sets.indexOf(sets[idx]), reps, weight),
                   onDelete: (idx) => _deleteSet(sets[idx], _sets.indexOf(sets[idx])),
@@ -416,11 +426,12 @@ class _ActiveWorkoutViewState extends State<_ActiveWorkoutView> {
 class _ExerciseSetGroup extends StatelessWidget {
   final String exerciseName;
   final List<Map<String, dynamic>> sets;
+  final String weightUnit;
   final Function(int) onToggle;
   final Function(int, int, double) onUpdate;
   final Function(int) onDelete;
   final VoidCallback onAddSet;
-  const _ExerciseSetGroup({required this.exerciseName, required this.sets, required this.onToggle, required this.onUpdate, required this.onDelete, required this.onAddSet});
+  const _ExerciseSetGroup({required this.exerciseName, required this.sets, required this.weightUnit, required this.onToggle, required this.onUpdate, required this.onDelete, required this.onAddSet});
 
   @override
   Widget build(BuildContext context) {
@@ -440,6 +451,7 @@ class _ExerciseSetGroup extends StatelessWidget {
               reps: (s['reps'] ?? 0) as int,
               weight: (s['weight'] ?? 0.0) as double,
               isCompleted: s['isCompleted'] ?? false,
+              weightUnit: weightUnit,
               onToggle: () => onToggle(i),
               onUpdate: (r, w) => onUpdate(i, r, w),
               onDelete: () => onDelete(i),
@@ -465,10 +477,11 @@ class _SetRow extends StatefulWidget {
   final int reps;
   final double weight;
   final bool isCompleted;
+  final String weightUnit;
   final VoidCallback onToggle;
   final Function(int, double) onUpdate;
   final VoidCallback onDelete;
-  const _SetRow({required this.setNumber, required this.reps, required this.weight, required this.isCompleted, required this.onToggle, required this.onUpdate, required this.onDelete});
+  const _SetRow({required this.setNumber, required this.reps, required this.weight, required this.isCompleted, required this.weightUnit, required this.onToggle, required this.onUpdate, required this.onDelete});
 
   @override
   State<_SetRow> createState() => _SetRowState();
@@ -572,7 +585,7 @@ class _SetRowState extends State<_SetRow> {
                       textAlign: TextAlign.center,
                       style: const TextStyle(color: AppColors.onSurface, fontSize: 14, fontWeight: FontWeight.w500),
                       decoration: InputDecoration(
-                        hintText: 'lbs',
+                        hintText: widget.weightUnit,
                         hintStyle: TextStyle(color: AppColors.onSurfaceVariant.withValues(alpha: 0.4), fontSize: 13),
                         isDense: true,
                         contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),

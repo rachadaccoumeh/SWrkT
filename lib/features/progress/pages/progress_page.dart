@@ -21,6 +21,7 @@ class _ProgressPageState extends State<ProgressPage> {
   List<Map<String, dynamic>> allWorkouts = [];
   List<Map<String, dynamic>> allSets = [];
   bool loading = true;
+  String weightUnit = 'lbs';
 
   @override
   void initState() {
@@ -37,6 +38,10 @@ class _ProgressPageState extends State<ProgressPage> {
         authCtrl.user.value = u;
       }
       final uid = u.$id;
+
+      // Load weight unit preference
+      final prefs = LocalStore.instance.getPrefs(uid);
+      weightUnit = (prefs?['weightUnit'] ?? 'lbs') as String;
 
       // Load from local first (instant)
       allWorkouts = LocalStore.instance.getWorkouts(uid);
@@ -135,7 +140,7 @@ class _ProgressPageState extends State<ProgressPage> {
                     SliverToBoxAdapter(
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                        child: _StatsGrid(count: totalWorkouts, sets: totalSets, reps: totalReps, volume: totalVolume),
+                        child: _StatsGrid(count: totalWorkouts, sets: totalSets, reps: totalReps, volume: totalVolume, weightUnit: weightUnit),
                       ),
                     ),
                     SliverToBoxAdapter(
@@ -148,7 +153,7 @@ class _ProgressPageState extends State<ProgressPage> {
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                          child: _PRSection(prs: prs),
+                          child: _PRSection(prs: prs, weightUnit: weightUnit),
                         ),
                       ),
                     const SliverToBoxAdapter(child: SizedBox(height: 32)),
@@ -161,8 +166,8 @@ class _ProgressPageState extends State<ProgressPage> {
 }
 
 class _StatsGrid extends StatelessWidget {
-  final int count; final int sets; final int reps; final double volume;
-  const _StatsGrid({required this.count, required this.sets, required this.reps, required this.volume});
+  final int count; final int sets; final int reps; final double volume; final String weightUnit;
+  const _StatsGrid({required this.count, required this.sets, required this.reps, required this.volume, required this.weightUnit});
 
   @override
   Widget build(BuildContext context) {
@@ -170,7 +175,7 @@ class _StatsGrid extends StatelessWidget {
       ('Workouts', count.toString(), Icons.fitness_center, AppColors.primary),
       ('Sets', sets.toString(), Icons.repeat, AppColors.secondaryContainer),
       ('Reps', reps.toString(), Icons.trending_up, const Color(0xFFFF8C42)),
-      ('Volume', '${volume.clean} lbs', Icons.scale, const Color(0xFF4AE1C6)),
+      ('Volume', '${volume.clean} $weightUnit', Icons.scale, const Color(0xFF4AE1C6)),
     ];
     return GridView.count(
       crossAxisCount: 2,
@@ -191,7 +196,7 @@ class _StatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
@@ -284,13 +289,19 @@ class _WeeklyChart extends StatelessWidget {
   }
 }
 
-class _PRSection extends StatelessWidget {
+class _PRSection extends StatefulWidget {
   final Map<String, double> prs;
-  const _PRSection({required this.prs});
+  final String weightUnit;
+  const _PRSection({required this.prs, required this.weightUnit});
 
   @override
+  State<_PRSection> createState() => _PRSectionState();
+}
+
+class _PRSectionState extends State<_PRSection> {
+  @override
   Widget build(BuildContext context) {
-    final sorted = prs.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final sorted = widget.prs.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
     final top = sorted.take(5).toList();
     return Container(
       padding: const EdgeInsets.all(20),
@@ -326,7 +337,7 @@ class _PRSection extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(color: AppColors.primary.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                    child: Text('${e.value.toStringAsFixed(1)} lbs', style: const TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600)),
+                    child: Text('${e.value.toStringAsFixed(1)} ${widget.weightUnit}', style: const TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600)),
                   ),
                 ],
               ),

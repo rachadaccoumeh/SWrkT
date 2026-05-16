@@ -77,6 +77,25 @@ class AppwriteRepository {
     );
   }
 
+  // Public versions for admin use
+  Future<models.Document> updateDocPublic(
+    String collectionId,
+    String docId,
+    Map<String, dynamic> data,
+    String userId,
+  ) => _updateDoc(collectionId, docId, data, userId);
+
+  Future<models.DocumentList> listDocsPublic(
+    String collectionId, {
+    List<String>? queries,
+  }) => _listDocs(collectionId, queries: queries);
+
+  Future<models.Document> createDocPublic(
+    String collectionId,
+    Map<String, dynamic> data,
+    String userId,
+  ) => _createDoc(collectionId, data, userId);
+
   Future<void> _deleteDoc(String collectionId, String docId) async {
     return _databases.deleteDocument(
       databaseId: AppwriteConstants.databaseId,

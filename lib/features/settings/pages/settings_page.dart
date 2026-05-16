@@ -6,6 +6,9 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/debug_log.dart';
+import '../../../core/utils/access_control.dart';
+import '../../../core/services/subscription_service.dart';
+import '../../../core/services/ad_service.dart';
 import '../../../data/repository/appwrite_repository.dart';
 import '../../../data/local/local_store.dart';
 import '../../../data/local/sync_manager.dart';
@@ -393,6 +396,9 @@ class _SettingsPageState extends State<SettingsPage> {
                     // Sync status
                     _syncStatus(),
                     const SizedBox(height: 20),
+                    // Subscription status
+                    _SubscriptionStatusCard(),
+                    const SizedBox(height: 20),
                     // App info and logs
                     Container(
                       decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(20), border: Border.all(color: AppColors.outlineVariant.withValues(alpha: 0.3))),
@@ -421,6 +427,185 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ),
     );
+  }
+}
+
+class _SubscriptionStatusCard extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final access = Get.find<AccessControl>();
+    final subs = Get.find<SubscriptionService>();
+
+    return Obx(() {
+      final isPremium = access.isPremium;
+      final isInTrial = access.isInTrial;
+      final currentPlan = subs.currentPlan;
+      final historyDays = access.historyDaysLimit;
+
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: isPremium
+              ? AppColors.primary.withValues(alpha: 0.08)
+              : AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isPremium
+                ? AppColors.primary.withValues(alpha: 0.3)
+                : AppColors.outlineVariant.withValues(alpha: 0.3),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: isPremium
+                        ? AppColors.primary.withValues(alpha: 0.1)
+                        : AppColors.surfaceHigh,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    isPremium ? Icons.star_rounded : Icons.person_outline_rounded,
+                    color: isPremium ? AppColors.primary : AppColors.onSurfaceVariant,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isPremium
+                            ? (currentPlan?.name ?? 'Premium')
+                            : 'Free Plan',
+                        style: const TextStyle(
+                          color: AppColors.onSurface,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _getStatusText(subs, isPremium, isInTrial),
+                        style: TextStyle(
+                          color: isPremium ? AppColors.primary : AppColors.onSurfaceVariant,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (!isPremium) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Icon(Icons.history, size: 14, color: AppColors.onSurfaceVariant),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Limited to ${historyDays > 0 ? historyDays : "all"} days history',
+                    style: const TextStyle(color: AppColors.onSurfaceVariant, fontSize: 12),
+                  ),
+                  const Spacer(),
+                  _AdStatusChip(),
+                ],
+              ),
+            ],
+            if (!isPremium) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 40,
+                child: OutlinedButton(
+                  onPressed: () => Get.toNamed('/subscription'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    side: const BorderSide(color: AppColors.primary),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Upgrade to Premium'),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    });
+  }
+
+  String _getStatusText(SubscriptionService subs, bool isPremium, bool isInTrial) {
+    final sub = subs.currentSubscription.value;
+    if (sub == null) return 'Free access';
+
+    switch (sub.status) {
+      case 'active':
+        if (sub.isLifetime) return 'Lifetime access';
+        if (sub.expiresAt != null) {
+          final days = sub.expiresAt!.difference(DateTime.now()).inDays;
+          return 'Active - $days days left';
+        }
+        return 'Active';
+      case 'trial':
+        if (sub.trialEndsAt != null) {
+          final days = sub.trialEndsAt!.difference(DateTime.now()).inDays;
+          return 'Free trial - $days days left';
+        }
+        return 'Free trial';
+      case 'granted':
+        return 'Promotional access';
+      default:
+        return sub.status;
+    }
+  }
+}
+
+class _AdStatusChip extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final adService = Get.find<AdService>();
+
+    return Obx(() {
+      final adsEnabled = adService.adsEnabled.value;
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: adsEnabled
+              ? AppColors.surfaceHigh
+              : AppColors.primary.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              adsEnabled ? Icons.ad_units : Icons.block,
+              size: 12,
+              color: adsEnabled
+                  ? AppColors.onSurfaceVariant
+                  : AppColors.primary,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              adsEnabled ? 'Ads shown' : 'No ads',
+              style: TextStyle(
+                color: adsEnabled
+                    ? AppColors.onSurfaceVariant
+                    : AppColors.primary,
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
+      );
+    });
   }
 }
 

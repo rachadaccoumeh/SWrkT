@@ -25,6 +25,7 @@ class _HomePageState extends State<HomePage> {
   List<Map<String, dynamic>> recentWorkouts = [];
   List<Map<String, dynamic>> recentExercises = [];
   bool loading = true;
+  String weightUnit = 'lbs';
 
   @override
   void initState() {
@@ -41,6 +42,10 @@ class _HomePageState extends State<HomePage> {
         authCtrl.user.value = user;
       }
       final uid = user!.$id;
+
+      // Load weight unit preference
+      final prefs = LocalStore.instance.getPrefs(uid);
+      weightUnit = (prefs?['weightUnit'] ?? 'lbs') as String;
 
       // Load from local first (instant)
       profile = LocalStore.instance.getProfile(uid);
@@ -209,6 +214,7 @@ class _HomePageState extends State<HomePage> {
                           workoutsThisWeek: _workoutsThisWeek,
                           totalVolume: _totalVolumeThisWeek,
                           streak: _streakDays,
+                          weightUnit: weightUnit,
                         ),
                       ),
                     ),
@@ -280,7 +286,10 @@ class _QuickStatsRow extends StatelessWidget {
   final int workoutsThisWeek;
   final double totalVolume;
   final int streak;
-  const _QuickStatsRow({required this.workoutsThisWeek, required this.totalVolume, required this.streak});
+  final String weightUnit;
+  const _QuickStatsRow({required this.workoutsThisWeek, required this.totalVolume, required this.streak, required this.weightUnit});
+
+  String _formatVolume(double vol) => vol >= 1000 ? '${(vol / 1000).toStringAsFixed(1)}k' : vol.toStringAsFixed(0);
 
   @override
   Widget build(BuildContext context) {
@@ -288,7 +297,7 @@ class _QuickStatsRow extends StatelessWidget {
       children: [
         Expanded(child: _MiniStatCard(label: 'This Week', value: '$workoutsThisWeek workouts', icon: Icons.calendar_today_rounded, color: AppColors.primary)),
         const SizedBox(width: 10),
-        Expanded(child: _MiniStatCard(label: 'Volume', value: '${totalVolume.clean} lbs', icon: Icons.scale_rounded, color: const Color(0xFF4AE1C6))),
+        Expanded(child: _MiniStatCard(label: 'Volume', value: '${_formatVolume(totalVolume)} $weightUnit', icon: Icons.scale_rounded, color: const Color(0xFF4AE1C6))),
         const SizedBox(width: 10),
         Expanded(child: _MiniStatCard(label: 'Streak', value: '$streak days', icon: Icons.local_fire_department_rounded, color: const Color(0xFFFF8C42))),
       ],
